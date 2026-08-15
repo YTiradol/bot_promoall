@@ -65,23 +65,32 @@ def load_data():
         print(f"❌ Erreur lors du chargement des données: {e}")
         return None
 
+# Table des unités personnalisées (du plus grand au plus petit)
+PRICE_UNITS = [
+    (10 ** 45, "D"),
+    (10 ** 42, "N"),
+    (10 ** 39, "X"),
+    (10 ** 36, "S"),
+    (10 ** 33, "U"),
+    (10 ** 30, "Q"),
+    (10 ** 27, "R"),
+    (10 ** 24, "Y"),
+    (10 ** 21, "Z"),
+    (10 ** 18, "E"),
+    (10 ** 15, "P"),
+    (10 ** 12, "T"),
+    (10 ** 9, "G"),
+    (10 ** 6, "M"),
+    (10 ** 3, "k"),
+]
+
 def format_price(price):
-    """Formate un prix pour l'affichage lisible"""
+    """Formate un prix pour l'affichage lisible avec les unités personnalisées"""
     price = float(price)
-    if price >= 1_000_000_000_000_000_000:  # 1 Exaillion
-        return f"{price / 1_000_000_000_000_000_000:.2f}Exa"
-    elif price >= 1_000_000_000_000_000:  # 1 Pétaillion
-        return f"{price / 1_000_000_000_000_000:.2f}Pet"
-    elif price >= 1_000_000_000_000:  # 1 Trilliard
-        return f"{price / 1_000_000_000_000:.2f}T"
-    elif price >= 1_000_000_000:  # 1 Milliard
-        return f"{price / 1_000_000_000:.2f}Md"
-    elif price >= 1_000_000:  # 1 Million
-        return f"{price / 1_000_000:.2f}M"
-    elif price >= 1_000:  # 1 Mille
-        return f"{price / 1_000:.2f}k"
-    else:
-        return str(int(price))
+    for threshold, suffix in PRICE_UNITS:
+        if price >= threshold:
+            return f"{price / threshold:.2f}{suffix}"
+    return str(int(price))
 
 def format_price_exact(price):
     """Retourne le prix exact formaté avec séparateurs"""
@@ -230,7 +239,7 @@ async def prix_revente(interaction: discord.Interaction, pourcentage: float):
             f"**Original:** {format_price(prix_original)}\n"
             f"**Augmentation:** {format_price(augmentation)}\n"
             f"**Revente:** **{format_price(prix_revente)}**\n"
-            f"```\nPrix exact: {format_price_exact(prix_revente)}\n```"
+            f"**Prix exact:**\n```\n{format_price_exact(prix_revente)}\n```"
         )
         
         # Vérifier la longueur pour ne pas dépasser les limites Discord
@@ -264,25 +273,37 @@ async def prix_revente(interaction: discord.Interaction, pourcentage: float):
     
     # Créer un message avec les prix en texte brut (facile à copier)
     if tech_mega:
-        prix_texte = f"PRIX REVENTE - Augmentation {pourcentage:g}%\n"
-        prix_texte += f"{'=' * 60}\n\n"
-        
+        header = f"PRIX REVENTE - Augmentation {pourcentage:g}%\n{'=' * 60}\n\n"
+
+        blocs = []
         for batiment in tech_mega:
             nom = batiment.get('nom', 'Inconnu')
             prix_original = float(batiment.get('valeur', 0))
             prix_revente = prix_original * (1 + pourcentage / 100)
-            
-            prix_texte += f"{nom}\n"
-            prix_texte += f"  Original: {format_price(prix_original)} ({format_price_exact(prix_original)})\n"
-            prix_texte += f"  Prix Revente: {format_price(prix_revente)} ({format_price_exact(prix_revente)})\n\n"
-        
-        # Envoyer le texte par chunks si trop long
-        if len(prix_texte) < 1990:
-            await interaction.followup.send(f"```\n{prix_texte}\n```")
-        else:
-            chunks = [prix_texte[i:i+1900] for i in range(0, len(prix_texte), 1900)]
-            for chunk in chunks:
-                await interaction.followup.send(f"```\n{chunk}\n```")
+
+            bloc = (
+                f"{nom}\n"
+                f"  Original: {format_price(prix_original)} ({format_price_exact(prix_original)})\n"
+                f"  Prix Revente: {format_price(prix_revente)} ({format_price_exact(prix_revente)})"
+            )
+            blocs.append(bloc)
+
+        # On découpe par bâtiment entier (jamais au milieu d'une ligne)
+        max_len = 1900
+        chunks = []
+        current = header
+        for bloc in blocs:
+            piece = bloc + "\n\n"
+            if len(current) + len(piece) > max_len and current != header:
+                chunks.append(current)
+                current = piece
+            else:
+                current += piece
+        if current.strip():
+            chunks.append(current)
+
+        for chunk in chunks:
+            await interaction.followup.send(f"```\n{chunk}\n```")
 
 @bot.tree.command(
     name="stats",
