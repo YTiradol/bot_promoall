@@ -1,7 +1,7 @@
 import os
 import discord
 from discord import app_commands
-from openai import OpenAI
+from openai import OpenAI 
 
 # Récupération automatique depuis les variables d'environnement du serveur
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
