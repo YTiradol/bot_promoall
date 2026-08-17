@@ -65,7 +65,8 @@ async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Ch
             "active": True,
             "dernier_mot": premier_mot,
             "dernier_joueur": None,
-            "historique": [premier_mot]
+            "historique": [premier_mot],
+            "index_mot": 0  # 🔧 FIX #1 : Ajouter un index pour éviter la répétition
         }
         await interaction.response.send_message(f"Le jeu de la grandeur est **activé** dans {salon.mention} !\n🚀 Premier mot donné par le bot : **{premier_mot}**")
     else:
@@ -90,26 +91,29 @@ async def on_message(message: discord.Message):
     nouveau_mot = message.content.strip()
     dernier_mot = session["dernier_mot"]
 
-    # Prompt strict pour forcer l'IA à comprendre l'échelle (taille, puissance, concept, etc.)
+    # 🔧 FIX #2 : Prompt amélioré pour éviter les faux négatifs
     prompt = (
-        f"Jeu de logique d'échelle. Mot précédent : '{dernier_mot}'. Nouveau mot : '{nouveau_mot}'. "
-        f"Est-ce que '{nouveau_mot}' est objectivement plus grand, plus puissant, d'une échelle supérieure ou englobe '{dernier_mot}' ? "
-        f"Réponds par un seul mot : OUI ou NON."
+        f"Tu es un arbitre strict pour un jeu d'échelle. "
+        f"Mot précédent : '{dernier_mot}'. Nouveau mot : '{nouveau_mot}'. "
+        f"Question : '{nouveau_mot}' est-il objectivement PLUS GRAND, PLUS PUISSANT ou d'une ÉCHELLE SUPÉRIEURE à '{dernier_mot}' ? "
+        f"Sois rigoureux. Réponds UNIQUEMENT par : OUI ou NON (rien d'autre)"
     )
 
     try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=5
+            max_tokens=5,
+            temperature=0.1  # 🔧 FIX #3 : Réduire la température pour plus de cohérence
         )
         reponse_ia = response.choices[0].message.content.strip().upper()
     except Exception as e:
         print(f"Erreur IA : {e}")
+        await message.channel.send(f"⚠️ Erreur de l'IA : {e}")
         return
 
-    # Si l'IA répond "OUI" (on vérifie si le mot OUI est présent dans la réponse)
-    if "OUI" in reponse_ia and "NON" not in reponse_ia:
+    # 🔧 FIX #4 : Meilleure vérification de la réponse
+    if reponse_ia.startswith("OUI"):
         session["dernier_mot"] = nouveau_mot
         session["dernier_joueur"] = message.author.id
         session["historique"].append(nouveau_mot)
@@ -123,10 +127,10 @@ async def on_message(message: discord.Message):
             f"📜 **Historique :** {historique_str}"
         )
         
-        # Relance avec un mot de départ différent pour éviter la répétition
+        # 🔧 FIX #5 : Utiliser l'index pour éviter la répétition cyclique
         mots_suivants = ["cellule", "planète", "atome", "continent", "photon", "univers"]
-        # On évite de remélanger le même que le précédent si possible
-        nouveau_premier_mot = mots_suivants[(len(session["historique"])) % len(mots_suivants)]
+        session["index_mot"] = (session["index_mot"] + 1) % len(mots_suivants)
+        nouveau_premier_mot = mots_suivants[session["index_mot"]]
         
         session["dernier_mot"] = nouveau_premier_mot
         session["dernier_joueur"] = None
