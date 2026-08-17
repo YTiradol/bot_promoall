@@ -2,6 +2,7 @@ import os
 import discord
 from discord import app_commands
 from openai import OpenAI
+import random
 
 # Récupération automatique depuis les variables d'environnement du serveur
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -49,6 +50,24 @@ async def ping(interaction: discord.Interaction):
 
     await interaction.followup.send(f"Pong 🏓 !\nStatut de l'IA : **{ai_status}**")
 
+async def generer_premier_mot():
+    """Demande à l'IA de générer un mot de départ aléatoire"""
+    prompt = "Propose un seul mot représentant quelque chose de petit ou d'une taille moyenne (ex: atome, cellule, graine). Réponds UNIQUEMENT avec le mot, rien d'autre."
+    
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0.7
+        )
+        mot = response.choices[0].message.content.strip().lower()
+        print(f"[IA] Mot de départ généré : {mot}")
+        return mot
+    except Exception as e:
+        print(f"[ERREUR] Impossible de générer un mot : {e}")
+        return "atome"  # Fallback
+
 @bot.tree.command(name="jeu-grandeur", description="Active ou désactive le jeu de la grandeur dans un salon.")
 @app_commands.describe(
     statut="Activer ou désactiver le jeu",
@@ -60,15 +79,16 @@ async def ping(interaction: discord.Interaction):
 ])
 async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Choice[str], salon: discord.TextChannel):
     if statut.value == "active":
-        premier_mot = "galaxie"
+        # L'IA génère le premier mot
+        premier_mot = await generer_premier_mot()
+        
         game_sessions[salon.id] = {
             "active": True,
             "dernier_mot": premier_mot,
             "dernier_joueur": None,
-            "historique": [premier_mot],
-            "index_mot": 0  # 🔧 FIX #1 : Ajouter un index pour éviter la répétition
+            "historique": [premier_mot]
         }
-        await interaction.response.send_message(f"Le jeu de la grandeur est **activé** dans {salon.mention} !\n🚀 Premier mot donné par le bot : **{premier_mot}**")
+        await interaction.response.send_message(f"Le jeu de la grandeur est **activé** dans {salon.mention} !\n🚀 Premier mot donné par l'IA : **{premier_mot}**")
     else:
         if salon.id in game_sessions:
             del game_sessions[salon.id]
@@ -88,53 +108,56 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"{message.author.mention} Tu ne peux pas jouer deux fois de suite !")
         return
 
-    nouveau_mot = message.content.strip()
+    nouveau_mot = message.content.strip().lower()
     dernier_mot = session["dernier_mot"]
 
-    # 🔧 FIX #2 : Prompt amélioré pour éviter les faux négatifs
+    # Prompt amélioré et simplifié
     prompt = (
-        f"Tu es un arbitre strict pour un jeu d'échelle. "
-        f"Mot précédent : '{dernier_mot}'. Nouveau mot : '{nouveau_mot}'. "
-        f"Question : '{nouveau_mot}' est-il objectivement PLUS GRAND, PLUS PUISSANT ou d'une ÉCHELLE SUPÉRIEURE à '{dernier_mot}' ? "
-        f"Sois rigoureux. Réponds UNIQUEMENT par : OUI ou NON (rien d'autre)"
+        f"Tu es un arbitre pour un jeu d'escalade d'échelle. "
+        f"Mot actuel : '{dernier_mot}'. "
+        f"Nouveau mot proposé : '{nouveau_mot}'. "
+        f"Le nouveau mot est-il PLUS GRAND, PLUS PUISSANT ou d'une ÉCHELLE SUPÉRIEURE au mot actuel ? "
+        f"Réponds avec exactement UN seul mot : OUI ou NON"
     )
 
     try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=5,
-            temperature=0.1  # 🔧 FIX #3 : Réduire la température pour plus de cohérence
+            max_tokens=10,
+            temperature=0.3
         )
         reponse_ia = response.choices[0].message.content.strip().upper()
+        print(f"[GAME] Mot joueur: '{nouveau_mot}' | Mot précédent: '{dernier_mot}' | Réponse IA: '{reponse_ia}'")
     except Exception as e:
-        print(f"Erreur IA : {e}")
+        print(f"[ERREUR IA] {e}")
         await message.channel.send(f"⚠️ Erreur de l'IA : {e}")
         return
 
-    # 🔧 FIX #4 : Meilleure vérification de la réponse
-    if reponse_ia.startswith("OUI"):
+    # Vérification stricte de la réponse
+    if "OUI" in reponse_ia:
+        print(f"[ACCEPTÉ] '{nouveau_mot}' est valide !")
         session["dernier_mot"] = nouveau_mot
         session["dernier_joueur"] = message.author.id
         session["historique"].append(nouveau_mot)
         await message.add_reaction("✅")
     else:
+        print(f"[REJETÉ] '{nouveau_mot}' n'est pas valide. Réponse IA: {reponse_ia}")
         # Partie perdue
         historique_str = " -> ".join(session["historique"])
         await message.add_reaction("❌")
         await message.channel.send(
-            f"❌ **Perdu !** '{nouveau_mot}' n'est pas considéré comme supérieur à '{dernier_mot}' (Réponse IA : {reponse_ia}).\n"
-            f"📜 **Historique :** {historique_str}"
+            f"❌ **Perdu !** '{nouveau_mot}' n'est pas considéré comme supérieur à '{dernier_mot}'.\n"
+            f"📜 **Historique :** {historique_str}\n"
+            f"💬 **Réponse de l'IA :** {reponse_ia}"
         )
         
-        # 🔧 FIX #5 : Utiliser l'index pour éviter la répétition cyclique
-        mots_suivants = ["cellule", "planète", "atome", "continent", "photon", "univers"]
-        session["index_mot"] = (session["index_mot"] + 1) % len(mots_suivants)
-        nouveau_premier_mot = mots_suivants[session["index_mot"]]
+        # L'IA génère un nouveau mot de départ
+        nouveau_premier_mot = await generer_premier_mot()
         
         session["dernier_mot"] = nouveau_premier_mot
         session["dernier_joueur"] = None
         session["historique"] = [nouveau_premier_mot]
-        await message.channel.send(f"🔄 Nouvelle partie ! Le nouveau mot de départ est : **{nouveau_premier_mot}**")
+        await message.channel.send(f"🔄 Nouvelle partie ! L'IA a choisi : **{nouveau_premier_mot}**")
 
 bot.run(DISCORD_TOKEN)
