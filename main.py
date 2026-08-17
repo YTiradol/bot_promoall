@@ -1,405 +1,145 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-import aiohttp
-import json
 import os
-from datetime import datetime
-from dotenv import load_dotenv
+import discord
+from discord import app_commands
+from openai import OpenAI
 
-# Charger les variables d'environnement
-load_dotenv()
+# Récupération automatique depuis les variables d'environnement du serveur
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Configuration
-API_URL = os.getenv('API_URL', 'https://monde8.empireimmo.com/api/buildings.json?key=eiK8_abffd893ce198bc434ef809fa8a1ac20')
-DATA_FILE = os.getenv('DATA_FILE', 'buildings.json')
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+# Configuration du client OpenAI pour Groq
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
 
-if not DISCORD_TOKEN:
-    raise ValueError("❌ DISCORD_TOKEN non trouvé dans .env. Créez un fichier .env avec votre token!")
-
-# Initialiser le bot avec intents
+# Configuration de Intents pour le bot
 intents = discord.Intents.default()
-intents.message_content = True
-intents.guild_messages = True
+intents.message_content = True  # Nécessaire pour lire le contenu des messages dans le jeu
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+class MyBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
 
-# ============= FONCTIONS UTILITAIRES =============
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("Commandes slash synchronisées.")
 
-async def fetch_api_data():
-    """Récupère les données de l'API Empire Immo"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(API_URL, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    print(f"❌ Erreur API: Status {response.status}")
-                    return None
-    except asyncio.TimeoutError:
-        print("❌ Timeout lors de la récupération API")
-        return None
-    except Exception as e:
-        print(f"❌ Erreur lors de la récupération API: {e}")
-        return None
+bot = MyBot()
 
-def save_data(data):
-    """Sauvegarde les données dans un fichier JSON"""
-    try:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"❌ Erreur lors de la sauvegarde: {e}")
-        return False
-
-def load_data():
-    """Charge les données depuis le fichier JSON"""
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return None
-    except Exception as e:
-        print(f"❌ Erreur lors du chargement des données: {e}")
-        return None
-
-# Table des unités personnalisées (du plus grand au plus petit)
-PRICE_UNITS = [
-    (10 ** 45, "D"),
-    (10 ** 42, "N"),
-    (10 ** 39, "X"),
-    (10 ** 36, "S"),
-    (10 ** 33, "U"),
-    (10 ** 30, "Q"),
-    (10 ** 27, "R"),
-    (10 ** 24, "Y"),
-    (10 ** 21, "Z"),
-    (10 ** 18, "E"),
-    (10 ** 15, "P"),
-    (10 ** 12, "T"),
-    (10 ** 9, "G"),
-    (10 ** 6, "M"),
-    (10 ** 3, "k"),
-]
-
-def format_price(price):
-    """Formate un prix pour l'affichage lisible avec les unités personnalisées"""
-    price = float(price)
-    for threshold, suffix in PRICE_UNITS:
-        if price >= threshold:
-            return f"{price / threshold:.2f}{suffix}"
-    return str(int(price))
-
-def format_price_exact(price):
-    """Retourne le prix exact formaté avec séparateurs"""
-    price = int(float(price))
-    return f"{price:,}".replace(",", " ")
-
-# ============= ÉVÉNEMENTS =============
+# État du jeu par salon (sauvegarde le salon actif, le dernier mot, le dernier joueur et l'historique)
+game_sessions = {}
 
 @bot.event
 async def on_ready():
-    """Événement appelé quand le bot est prêt"""
+    print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
+
+# Commande /ping pour tester le bot et l'IA
+@bot.tree.command(name="ping", description="Vérifie si le bot et l'IA fonctionnent.")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    
+    ai_status = "OK"
     try:
-        synced = await bot.tree.sync()
-        print(f"✅ Commandes synchronisées: {len(synced)}")
+        # Test rapide de l'IA avec Groq
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", # Modèle rapide et gratuit sur Groq
+            messages=[{"role": "user", "content": "Réponds juste 'Pong'"}],
+            max_tokens=5
+        )
+        ai_reply = response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"❌ Erreur lors de la synchronisation: {e}")
-    print(f"🤖 {bot.user} est connecté!")
+        ai_status = f"Erreur : {e}"
 
-# ============= COMMANDES SLASH =============
+    await interaction.followup.send(f"Pong 🏓 !\nStatut de l'IA : **{ai_status}**")
 
-@bot.tree.command(
-    name="maj_api",
-    description="📥 Met à jour le fichier buildings.json avec les données de l'API"
-)
-async def maj_api(interaction: discord.Interaction):
-    """Met à jour les données via l'API"""
-    await interaction.response.defer()
-    
-    # Récupérer les données
-    data = await fetch_api_data()
-    
-    if data is None:
-        embed = discord.Embed(
-            title="❌ Erreur de connexion",
-            description="Impossible de récupérer les données de l'API.\nVérifiez votre connexion internet et l'URL de l'API.",
-            color=discord.Color.red()
-        )
-        embed.set_footer(text="Empire Immo Bot")
-        await interaction.followup.send(embed=embed)
-        return
-    
-    # Sauvegarder les données
-    if save_data(data):
-        nb_perso = len(data.get('batiments_perso', []))
-        nb_entreprise = len(data.get('batiments_entreprise', []))
-        nb_terrain = len(data.get('batiments_terrain', []))
-        
-        embed = discord.Embed(
-            title="✅ Mise à jour réussie",
-            description="Les données ont été synchronisées avec l'API",
-            color=discord.Color.green()
-        )
-        embed.add_field(
-            name="📊 Statistiques",
-            value=f"👤 Personnels: {nb_perso}\n🏢 Entreprise: {nb_entreprise}\n🏞️ Terrains: {nb_terrain}",
-            inline=False
-        )
-        embed.add_field(
-            name="🕐 Timestamp",
-            value=data.get('mise_a_jour', 'N/A'),
-            inline=False
-        )
-        embed.set_footer(text=f"Fichier: {DATA_FILE}")
-        await interaction.followup.send(embed=embed)
-    else:
-        embed = discord.Embed(
-            title="❌ Erreur de sauvegarde",
-            description="Les données n'ont pas pu être sauvegardées.",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed)
-
-@bot.tree.command(
-    name="prix_revente",
-    description="💰 Affiche les Technopôle et Mégapôle avec prix augmenté"
-)
+# Commande /jeu-grandeur
+@bot.tree.command(name="jeu-grandeur", description="Active ou désactive le jeu de la grandeur dans un salon.")
 @app_commands.describe(
-    pourcentage="Pourcentage d'augmentation (ex: 10 pour +10%)"
+    statut="Activer ou désactiver le jeu",
+    salon="Le salon où se déroulera le jeu"
 )
-async def prix_revente(interaction: discord.Interaction, pourcentage: float):
-    """Affiche les prix avec augmentation"""
-    
-    # Valider le pourcentage
-    if pourcentage < 0:
-        embed = discord.Embed(
-            title="❌ Erreur",
-            description="Le pourcentage doit être positif!",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed)
+@app_commands.choices(statut=[
+    app_commands.Choice(name="activé", value="active"),
+    app_commands.Choice(name="désactivé", value="desactive")
+])
+async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Choice[str], salon: discord.TextChannel):
+    if statut.value == "active":
+        # Initialisation d'une nouvelle partie
+        premier_mot = "univers" # Mot de départ par défaut
+        game_sessions[salon.id] = {
+            "active": True,
+            "dernier_mot": premier_mot,
+            "dernier_joueur": None,
+            "historique": [premier_mot]
+        }
+        await interaction.response.send_message(f"Le jeu de la grandeur est **activé** dans {salon.mention} !\n🚀 Premier mot donné par le bot : **{premier_mot}**")
+    else:
+        if salon.id in game_sessions:
+            del game_sessions[salon.id]
+        await interaction.response.send_message(f"Le jeu de la grandeur est **désactivé** dans {salon.mention}.")
+
+# Écouteur de messages pour le déroulement du jeu
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignorer les messages des bots ou les messages hors salons de jeu
+    if message.author.bot or message.channel.id not in game_sessions:
         return
-    
-    await interaction.response.defer()
-    
-    # Charger les données
-    data = load_data()
-    
-    if data is None:
-        embed = discord.Embed(
-            title="❌ Pas de données",
-            description="Aucune donnée trouvée.\n\nUtilisez `/maj_api` d'abord pour télécharger les données.",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed)
+
+    session = game_sessions[message.channel.id]
+    if not session["active"]:
         return
-    
-    # Récupérer les bâtiments entreprise
-    batiments_entreprise = data.get('batiments_entreprise', [])
-    
-    # Filtrer Technopôle et Mégapôle
-    tech_mega = [
-        b for b in batiments_entreprise 
-        if 'Technopôle' in b.get('nom', '') or 'Mégapôle' in b.get('nom', '')
-    ]
-    
-    # Trier par prix décroissant
-    tech_mega.sort(key=lambda x: float(x.get('valeur', 0)), reverse=True)
-    
-    if not tech_mega:
-        embed = discord.Embed(
-            title="ℹ️ Aucun bâtiment trouvé",
-            description="Aucun Technopôle ou Mégapôle trouvé dans les données.",
-            color=discord.Color.orange()
-        )
-        await interaction.followup.send(embed=embed)
+
+    # Règle : Interdit de jouer 2 fois d'affilée
+    if message.author.id == session["dernier_joueur"]:
+        await message.add_reaction("❌")
+        await message.channel.send(f"{message.author.mention} Tu ne peux pas jouer deux fois de suite !")
         return
-    
-    # Créer les embeds (limite de 2000 caractères par embed Discord)
-    embeds = []
-    current_embed = discord.Embed(
-        title=f"💰 Prix Revente - Augmentation de {pourcentage:g}%",
-        description=f"Affichage de {len(tech_mega)} bâtiment(s)",
-        color=discord.Color.blue()
+
+    nouveau_mot = message.content.strip()
+    dernier_mot = session["dernier_mot"]
+
+    # Demande à l'IA de valider si le nouveau mot est "supérieur" (concept, taille, puissance, échelle, etc.)
+    prompt = (
+        f"Tu es l'arbitre d'un jeu de logique et d'échelle. "
+        f"Le mot précédent était '{dernier_mot}' et le nouveau mot proposé est '{nouveau_mot}'. "
+        f"Est-ce que '{nouveau_mot}' est logiquement supérieur, plus grand, plus fort, ou d'une échelle supérieure à '{dernier_mot}' ? "
+        f"Réponds uniquement par 'OUI' ou 'NON'."
     )
-    
-    char_count = 0
-    
-    for batiment in tech_mega:
-        nom = batiment.get('nom', 'Inconnu')
-        prix_original = float(batiment.get('valeur', 0))
-        augmentation = prix_original * (pourcentage / 100)
-        prix_revente = prix_original + augmentation
-        
-        # Créer le contenu du champ
-        field_value = (
-            f"**Original:** {format_price(prix_original)}\n"
-            f"**Augmentation:** {format_price(augmentation)}\n"
-            f"**Revente:** **{format_price(prix_revente)}**\n"
-            f"**Prix exact:**\n```\n{format_price_exact(prix_revente)}\n```"
-        )
-        
-        # Vérifier la longueur pour ne pas dépasser les limites Discord
-        if char_count + len(field_value) > 1800:
-            embeds.append(current_embed)
-            current_embed = discord.Embed(
-                title=f"💰 Prix Revente - Suite",
-                color=discord.Color.blue()
-            )
-            char_count = 0
-        
-        current_embed.add_field(name=f"🏗️ {nom}", value=field_value, inline=False)
-        char_count += len(field_value)
-    
-    if current_embed.fields:
-        embeds.append(current_embed)
-    
-    # Ajouter les footers
-    if embeds:
-        for i, embed in enumerate(embeds):
-            if i == len(embeds) - 1:  # Dernier embed
-                embed.set_footer(
-                    text=f"Mise à jour: {data.get('mise_a_jour', 'N/A')} | {data.get('nom', '')}"
-                )
-            else:
-                embed.set_footer(text=f"Page {i + 1}")
-    
-    # Envoyer les embeds
-    for embed in embeds:
-        await interaction.followup.send(embed=embed)
-    
-    # Créer un message avec les prix en texte brut (facile à copier)
-    if tech_mega:
-        header = f"PRIX REVENTE - Augmentation {pourcentage:g}%\n{'=' * 60}\n\n"
 
-        blocs = []
-        for batiment in tech_mega:
-            nom = batiment.get('nom', 'Inconnu')
-            prix_original = float(batiment.get('valeur', 0))
-            prix_revente = prix_original * (1 + pourcentage / 100)
-
-            bloc = (
-                f"{nom}\n"
-                f"  Original: {format_price(prix_original)} ({format_price_exact(prix_original)})\n"
-                f"  Prix Revente: {format_price(prix_revente)} ({format_price_exact(prix_revente)})"
-            )
-            blocs.append(bloc)
-
-        # On découpe par bâtiment entier (jamais au milieu d'une ligne)
-        max_len = 1900
-        chunks = []
-        current = header
-        for bloc in blocs:
-            piece = bloc + "\n\n"
-            if len(current) + len(piece) > max_len and current != header:
-                chunks.append(current)
-                current = piece
-            else:
-                current += piece
-        if current.strip():
-            chunks.append(current)
-
-        for chunk in chunks:
-            await interaction.followup.send(f"```\n{chunk}\n```")
-
-@bot.tree.command(
-    name="stats",
-    description="📊 Affiche les statistiques des bâtiments"
-)
-async def stats(interaction: discord.Interaction):
-    """Affiche les statistiques"""
-    await interaction.response.defer()
-    
-    data = load_data()
-    
-    if data is None:
-        embed = discord.Embed(
-            title="❌ Pas de données",
-            description="Aucune donnée trouvée.\n\nUtilisez `/maj_api` d'abord.",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed)
-        return
-    
-    nb_perso = len(data.get('batiments_perso', []))
-    nb_entreprise = len(data.get('batiments_entreprise', []))
-    nb_terrain = len(data.get('batiments_terrain', []))
-    
-    # Compter les Technopôle et Mégapôle
-    batiments_entreprise = data.get('batiments_entreprise', [])
-    tech_mega = [b for b in batiments_entreprise if 'Technopôle' in b.get('nom', '') or 'Mégapôle' in b.get('nom', '')]
-    
-    embed = discord.Embed(
-        title="📊 Statistiques des bâtiments",
-        color=discord.Color.gold()
-    )
-    embed.add_field(name="👤 Bâtiments Personnels", value=str(nb_perso), inline=True)
-    embed.add_field(name="🏢 Bâtiments Entreprise", value=str(nb_entreprise), inline=True)
-    embed.add_field(name="🏞️ Terrains", value=str(nb_terrain), inline=True)
-    embed.add_field(name="🏗️ Technopôle/Mégapôle", value=str(len(tech_mega)), inline=True)
-    embed.set_footer(text=f"Mise à jour: {data.get('mise_a_jour', 'N/A')} | {data.get('nom', '')}")
-    
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(
-    name="aide",
-    description="❓ Affiche l'aide sur les commandes"
-)
-async def aide(interaction: discord.Interaction):
-    """Affiche l'aide"""
-    embed = discord.Embed(
-        title="❓ Aide du Bot Empire Immo",
-        description="Voici les commandes disponibles:",
-        color=discord.Color.blurple()
-    )
-    
-    embed.add_field(
-        name="/maj_api",
-        value="Télécharge et met à jour les données des bâtiments depuis l'API",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="/prix_revente <pourcentage>",
-        value="Affiche tous les Technopôle et Mégapôle avec prix augmenté\n*Exemple: `/prix_revente 15` pour +15%*",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="/stats",
-        value="Affiche les statistiques des bâtiments",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="/aide",
-        value="Affiche cette aide",
-        inline=False
-    )
-    
-    embed.set_footer(text="Bot Empire Immo | Monde 8")
-    
-    await interaction.response.send_message(embed=embed)
-
-# ============= DÉMARRAGE =============
-
-import asyncio
-
-async def main():
-    async with bot:
-        await bot.start(DISCORD_TOKEN)
-
-if __name__ == "__main__":
-    print("🚀 Démarrage du bot Empire Immo...")
-    print(f"📁 Fichier de données: {DATA_FILE}")
-    print(f"🔗 API URL: {API_URL[:50]}...")
-    
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n❌ Bot arrêté par l'utilisateur")
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10
+        )
+        reponse_ia = response.choices[0].message.content.strip().upper()
     except Exception as e:
-        print(f"\n❌ Erreur critique: {e}")
+        print(f"Erreur IA : {e}")
+        return
+
+    if "OUI" in reponse_ia:
+        # Validation
+        session["dernier_mot"] = nouveau_mot
+        session["dernier_joueur"] = message.author.id
+        session["historique"].append(nouveau_mot)
+        await message.add_reaction("✅")
+    else:
+        # Erreur / Partie perdue
+        historique_str = " -> ".join(session["historique"])
+        await message.add_reaction("❌")
+        await message.channel.send(
+            f"❌ **Perdu !** '{nouveau_mot}' n'est pas considéré comme supérieur à '{dernier_mot}'.\n"
+            f"📜 **Historique de la partie :** {historique_str}"
+        )
+        
+        # Relance avec un nouveau premier mot
+        nouveau_premier_mot = "atome"
+        session["dernier_mot"] = nouveau_premier_mot
+        session["dernier_joueur"] = None
+        session["historique"] = [nouveau_premier_mot]
+        await message.channel.send(f"🔄 Une nouvelle partie recommence ! Le nouveau mot de départ est : **{nouveau_premier_mot}**")
+
+# Lancement du bot avec le token de la variable d'environnement
+bot.run(DISCORD_TOKEN)
