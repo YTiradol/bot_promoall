@@ -1,7 +1,7 @@
 import os
 import discord
 from discord import app_commands
-from openai import OpenAI 
+from openai import OpenAI
 
 # Récupération automatique depuis les variables d'environnement du serveur
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -28,7 +28,7 @@ class MyBot(discord.Client):
 
 bot = MyBot()
 
-# État du jeu par salon (sauvegarde le salon actif, le dernier mot, le dernier joueur et l'historique)
+# État du jeu par salon
 game_sessions = {}
 
 @bot.event
@@ -42,9 +42,9 @@ async def ping(interaction: discord.Interaction):
     
     ai_status = "OK"
     try:
-        # Test rapide de l'IA avec Groq
+        # Test rapide de l'IA avec un modèle valide
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # Modèle rapide et gratuit sur Groq
+            model="openai/gpt-oss-20b", 
             messages=[{"role": "user", "content": "Réponds juste 'Pong'"}],
             max_tokens=5
         )
@@ -66,8 +66,7 @@ async def ping(interaction: discord.Interaction):
 ])
 async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Choice[str], salon: discord.TextChannel):
     if statut.value == "active":
-        # Initialisation d'une nouvelle partie
-        premier_mot = "univers" # Mot de départ par défaut
+        premier_mot = "univers"
         game_sessions[salon.id] = {
             "active": True,
             "dernier_mot": premier_mot,
@@ -83,7 +82,6 @@ async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Ch
 # Écouteur de messages pour le déroulement du jeu
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignorer les messages des bots ou les messages hors salons de jeu
     if message.author.bot or message.channel.id not in game_sessions:
         return
 
@@ -91,7 +89,6 @@ async def on_message(message: discord.Message):
     if not session["active"]:
         return
 
-    # Règle : Interdit de jouer 2 fois d'affilée
     if message.author.id == session["dernier_joueur"]:
         await message.add_reaction("❌")
         await message.channel.send(f"{message.author.mention} Tu ne peux pas jouer deux fois de suite !")
@@ -100,7 +97,6 @@ async def on_message(message: discord.Message):
     nouveau_mot = message.content.strip()
     dernier_mot = session["dernier_mot"]
 
-    # Demande à l'IA de valider si le nouveau mot est "supérieur" (concept, taille, puissance, échelle, etc.)
     prompt = (
         f"Tu es l'arbitre d'un jeu de logique et d'échelle. "
         f"Le mot précédent était '{dernier_mot}' et le nouveau mot proposé est '{nouveau_mot}'. "
@@ -110,7 +106,7 @@ async def on_message(message: discord.Message):
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10
         )
@@ -120,13 +116,11 @@ async def on_message(message: discord.Message):
         return
 
     if "OUI" in reponse_ia:
-        # Validation
         session["dernier_mot"] = nouveau_mot
         session["dernier_joueur"] = message.author.id
         session["historique"].append(nouveau_mot)
         await message.add_reaction("✅")
     else:
-        # Erreur / Partie perdue
         historique_str = " -> ".join(session["historique"])
         await message.add_reaction("❌")
         await message.channel.send(
@@ -134,12 +128,11 @@ async def on_message(message: discord.Message):
             f"📜 **Historique de la partie :** {historique_str}"
         )
         
-        # Relance avec un nouveau premier mot
         nouveau_premier_mot = "atome"
         session["dernier_mot"] = nouveau_premier_mot
         session["dernier_joueur"] = None
         session["historique"] = [nouveau_premier_mot]
         await message.channel.send(f"🔄 Une nouvelle partie recommence ! Le nouveau mot de départ est : **{nouveau_premier_mot}**")
 
-# Lancement du bot avec le token de la variable d'environnement
+# Lancement du bot
 bot.run(DISCORD_TOKEN)
