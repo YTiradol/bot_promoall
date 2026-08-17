@@ -7,15 +7,13 @@ from openai import OpenAI
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Configuration du client OpenAI pour Groq
 client = OpenAI(
     api_key=GROQ_API_KEY,
     base_url="https://api.groq.com/openai/v1"
 )
 
-# Configuration de Intents pour le bot
 intents = discord.Intents.default()
-intents.message_content = True  # Nécessaire pour lire le contenu des messages dans le jeu
+intents.message_content = True
 
 class MyBot(discord.Client):
     def __init__(self):
@@ -28,33 +26,29 @@ class MyBot(discord.Client):
 
 bot = MyBot()
 
-# État du jeu par salon
+# Stockage des sessions de jeu
 game_sessions = {}
 
 @bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-# Commande /ping pour tester le bot et l'IA
 @bot.tree.command(name="ping", description="Vérifie si le bot et l'IA fonctionnent.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
     
     ai_status = "OK"
     try:
-        # Test rapide de l'IA avec un modèle valide
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b", 
             messages=[{"role": "user", "content": "Réponds juste 'Pong'"}],
             max_tokens=5
         )
-        ai_reply = response.choices[0].message.content.strip()
     except Exception as e:
         ai_status = f"Erreur : {e}"
 
     await interaction.followup.send(f"Pong 🏓 !\nStatut de l'IA : **{ai_status}**")
 
-# Commande /jeu-grandeur
 @bot.tree.command(name="jeu-grandeur", description="Active ou désactive le jeu de la grandeur dans un salon.")
 @app_commands.describe(
     statut="Activer ou désactiver le jeu",
@@ -66,7 +60,7 @@ async def ping(interaction: discord.Interaction):
 ])
 async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Choice[str], salon: discord.TextChannel):
     if statut.value == "active":
-        premier_mot = "univers"
+        premier_mot = "galaxie"
         game_sessions[salon.id] = {
             "active": True,
             "dernier_mot": premier_mot,
@@ -79,7 +73,6 @@ async def jeu_grandeur(interaction: discord.Interaction, statut: app_commands.Ch
             del game_sessions[salon.id]
         await interaction.response.send_message(f"Le jeu de la grandeur est **désactivé** dans {salon.mention}.")
 
-# Écouteur de messages pour le déroulement du jeu
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.channel.id not in game_sessions:
@@ -97,42 +90,47 @@ async def on_message(message: discord.Message):
     nouveau_mot = message.content.strip()
     dernier_mot = session["dernier_mot"]
 
+    # Prompt strict pour forcer l'IA à comprendre l'échelle (taille, puissance, concept, etc.)
     prompt = (
-        f"Tu es l'arbitre d'un jeu de logique et d'échelle. "
-        f"Le mot précédent était '{dernier_mot}' et le nouveau mot proposé est '{nouveau_mot}'. "
-        f"Est-ce que '{nouveau_mot}' est logiquement supérieur, plus grand, plus fort, ou d'une échelle supérieure à '{dernier_mot}' ? "
-        f"Réponds uniquement par 'OUI' ou 'NON'."
+        f"Jeu de logique d'échelle. Mot précédent : '{dernier_mot}'. Nouveau mot : '{nouveau_mot}'. "
+        f"Est-ce que '{nouveau_mot}' est objectivement plus grand, plus puissant, d'une échelle supérieure ou englobe '{dernier_mot}' ? "
+        f"Réponds par un seul mot : OUI ou NON."
     )
 
     try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=10
+            max_tokens=5
         )
         reponse_ia = response.choices[0].message.content.strip().upper()
     except Exception as e:
         print(f"Erreur IA : {e}")
         return
 
-    if "OUI" in reponse_ia:
+    # Si l'IA répond "OUI" (on vérifie si le mot OUI est présent dans la réponse)
+    if "OUI" in reponse_ia and "NON" not in reponse_ia:
         session["dernier_mot"] = nouveau_mot
         session["dernier_joueur"] = message.author.id
         session["historique"].append(nouveau_mot)
         await message.add_reaction("✅")
     else:
+        # Partie perdue
         historique_str = " -> ".join(session["historique"])
         await message.add_reaction("❌")
         await message.channel.send(
-            f"❌ **Perdu !** '{nouveau_mot}' n'est pas considéré comme supérieur à '{dernier_mot}'.\n"
-            f"📜 **Historique de la partie :** {historique_str}"
+            f"❌ **Perdu !** '{nouveau_mot}' n'est pas considéré comme supérieur à '{dernier_mot}' (Réponse IA : {reponse_ia}).\n"
+            f"📜 **Historique :** {historique_str}"
         )
         
-        nouveau_premier_mot = "atome"
+        # Relance avec un mot de départ différent pour éviter la répétition
+        mots_suivants = ["cellule", "planète", "atome", "continent", "photon", "univers"]
+        # On évite de remélanger le même que le précédent si possible
+        nouveau_premier_mot = mots_suivants[(len(session["historique"])) % len(mots_suivants)]
+        
         session["dernier_mot"] = nouveau_premier_mot
         session["dernier_joueur"] = None
         session["historique"] = [nouveau_premier_mot]
-        await message.channel.send(f"🔄 Une nouvelle partie recommence ! Le nouveau mot de départ est : **{nouveau_premier_mot}**")
+        await message.channel.send(f"🔄 Nouvelle partie ! Le nouveau mot de départ est : **{nouveau_premier_mot}**")
 
-# Lancement du bot
 bot.run(DISCORD_TOKEN)
